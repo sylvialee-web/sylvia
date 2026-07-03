@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>批次 Resize 圖片並一鍵下載 (ZIP)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 20px; }
+    .controls { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+    label { font-size:14px; }
+    input[type="number"] { width:100px; }
+    .preview { display:flex; flex-wrap:wrap; gap:12px; margin-top:12px; }
+    .thumb { border:1px solid #ddd; padding:8px; width:160px; }
+    .thumb img { max-width:100%; display:block; margin-bottom:6px; }
+    .thumb small { color:#666; display:block; word-break:break-word; }
+    .bad { color:crimson; }
+    #log { white-space:pre-wrap; margin-top:10px; color:#333; }
+    button { padding:8px 12px; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+  <h2>批次 Resize 圖片並一鍵下載 (ZIP)</h2>
+
+  <div class="controls">
+    <label>選擇圖片（多選）：
+      <input id="files" type="file" accept="image/*" multiple>
+    </label>
+
+    <label>最大寬度(px)
+      <input id="maxWidth" type="number" min="1" placeholder="例如 1024">
+    </label>
+
+    <label>最大高度(px)
+      <input id="maxHeight" type="number" min="1" placeholder="例如 768">
+    </label>
+
+    <label>縮放比例(%)
+      <input id="scalePercent" type="number" min="1" max="100" placeholder="例如 50">
+    </label>
+
+    <label>輸出格式
+      <select id="outFormat">
+        <option value="image/jpeg">JPEG</option>
+        <option value="image/png">PNG</option>
+        <option value="image/webp">WEBP</option>
+      </select>
+    </label>
+
+    <label>JPEG 質量 (0.5-1.0)
+      <input id="quality" type="number" step="0.05" min="0.1" max="1" value="0.9" style="width:80px">
+    </label>
+
+    <button id="processBtn">產生並打包下載 (ZIP)</button>
+  </div>
+
+  <div><small>注意：上傳檔案限制為 500 KB 以內（每個檔案）。系統會跳過超過大小的檔案。</small></div>
+
+  <div class="preview" id="preview"></div>
+
+  <div id="log"></div>
+
+<script>
+const MAX_BYTES = 500 * 1024; // 500 KB
+
+const filesInput = document.getElementById('files');
+const preview = document.getElementById('preview');
+const logEl = document.getElementById('log');
+const processBtn = document.getElementById('processBtn');
+
+let selectedFiles = [];
+
+filesInput.addEventListener('change', e => {
+  selectedFiles = Array.from(e.target.files || []);
+  renderPreview();
+});
+
+function renderPreview() {
+  preview.innerHTML = '';
+  logEl.textContent = '';
+  if (selectedFiles.length === 0) {
+    logEl.textContent = '尚未選擇檔案。';
+    return;
+  }
+  selectedFiles.forEach(file => {
+    const el = document.createElement('div');
+    el.className = 'thumb';
+    const title = document.createElement('div');
+    title.innerHTML = `<strong>${escapeHtml(file.name)}</strong>`;
+    el.appendChild(title);
+
+    if (file.size > MAX_BYTES) {
+      const bad = document.createElement('div');
+      bad.className = 'bad';
+      bad.textContent = `檔案過大： ${(file.size/1024).toFixed(1)} KB（超過 500 KB，會被跳過）`;
+      el.appendChild(bad);
+      preview.appendChild(el);
+      return;
+    }
+
+    const img = document.createElement('img');
+    img.alt = file.name;
+    el.appendChild(img);
+
+    const info = document.createElement('small');
+    info.textContent = `大小: ${(file.size/1024).toFixed(1)} KB`;
+    el.appendChild(info);
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+
+    preview.appendChild(el);
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+processBtn.addEventListener('click', async () => {
+  if (!selectedFiles.length) {
+    alert('請先選擇至少一個圖片檔案。');
+    return;
+  }
+
+  const maxW = parseInt(document.getElementById('maxWidth').value) || null;
+  const maxH = parseInt(document.getElementById('maxHeight').value) || null;
+  const scalePercent = parseFloat(document.getElementById('scalePercent').value) || null;
+  const outFormat = document.getElementById('outFormat').value;
+  let quality = parseFloat(document.getElementById('quality').value);
+  if (isNaN(quality) || quality <= 0) quality = 0.9;
+
+  logEl.textContent = '開始處理...';
+  const zip = new JSZip();
+  let processed = 0;
+  let skipped = 0;
+
+  for (const file of selectedFiles) {
+    if (file.size > MAX_BYTES) {
+      skipped++;
+      logEl.textContent += `\n跳過 ${file.name}（超過 500 KB）`;
+      continue;
+    }
+    try {
+      const blob = await fileToResizedBlob(file, { maxW, maxH, scalePercent, outFormat, quality });
+      const nameNoExt = file.name.replace(/\.[^/.]+$/, "");
+      const ext = mimeToExt(outFormat);
+      zip.file(`${nameNoExt}_resized.${ext}`, blob);
+      processed++;
+      logEl.textContent += `\n處理完成： ${file.name} → ${(blob.size/1024).toFixed(1)} KB`;
+    } catch (err) {
+      logEl.textContent += `\n處理失敗： ${file.name} (${err.message})`;
+    }
+  }
+
+  if (processed === 0) {
+    logEl.textContent += '\n沒有任何檔案被處理。';
+    return;
+  }
+
+  logEl.textContent += '\n壓縮 ZIP 中...';
+  const zipBlob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(zipBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  const timeStr = new Date().toISOString().replace(/[:.]/g, "-");
+  a.download = `images_resized_${timeStr}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  logEl.textContent += `\n完成！已下載 ${processed} 張圖（跳過 ${skipped} 張）。`;
+});
+
+function mimeToExt(mime) {
+  if (mime === 'image/jpeg') return 'jpg';
+  if (mime === 'image/png') return 'png';
+  if (mime === 'image/webp') return 'webp';
+  return 'bin';
+}
+
+function fileToResizedBlob(file, { maxW, maxH, scalePercent, outFormat, quality }) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = async () => {
+      try {
+        let iw = img.naturalWidth;
+        let ih = img.naturalHeight;
+        let targetW = iw;
+        let targetH = ih;
+
+        if (scalePercent) {
+          const s = scalePercent / 100;
+          targetW = Math.max(1, Math.round(iw * s));
+          targetH = Math.max(1, Math.round(ih * s));
+        } else {
+          if (maxW && maxH) {
+            const wRatio = maxW / iw;
+            const hRatio = maxH / ih;
+            const r = Math.min(1, wRatio, hRatio);
+            targetW = Math.max(1, Math.round(iw * r));
+            targetH = Math.max(1, Math.round(ih * r));
+          } else if (maxW) {
+            const r = Math.min(1, maxW / iw);
+            targetW = Math.max(1, Math.round(iw * r));
+            targetH = Math.max(1, Math.round(ih * r));
+          } else if (maxH) {
+            const r = Math.min(1, maxH / ih);
+            targetW = Math.max(1, Math.round(iw * r));
+            targetH = Math.max(1, Math.round(ih * r));
+          } // else keep original
+        }
+
+        // create canvas with proper orientation (basic)
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+
+        // toBlob
+        canvas.toBlob(async blob => {
+          if (!blob) return reject(new Error('無法產生 Blob'));
+          resolve(blob);
+        }, outFormat, (outFormat === 'image/png') ? undefined : quality);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => reject(new Error('無法讀取圖片檔案'));
+    const reader = new FileReader();
+    reader.onload = e => {
+      img.src = e.target.result;
+      // 如果是 SVG 或者特殊格式，瀏覽器可能跨域阻擋；大多數情況下上傳本機檔案是 OK
+    };
+    reader.onerror = () => reject(new Error('無法讀取檔案'));
+    reader.readAsDataURL(file);
+  });
+}
+</script>
+</body>
+</html>
